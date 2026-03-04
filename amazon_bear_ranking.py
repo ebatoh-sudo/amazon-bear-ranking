@@ -30,6 +30,27 @@ def fetch_ranking():
         print("[ERROR] Amazon API認証情報が未設定です。")
         sys.exit(1)
 
+    # デバッグ: 認証情報の先頭/末尾を表示（秘密部分は隠す）
+    print(f"[DEBUG] credential_id: {AMAZON_ACCESS_KEY[:20]}...{AMAZON_ACCESS_KEY[-4:]}")
+    print(f"[DEBUG] credential_secret: {AMAZON_SECRET_KEY[:20]}...{AMAZON_SECRET_KEY[-4:]}")
+    print(f"[DEBUG] tag: {AMAZON_PARTNER_TAG}")
+
+    # デバッグ: OAuth2リクエストを手動で試行
+    import base64
+    token_url = "https://api.amazon.co.jp/auth/o2/token"
+    auth_str = base64.b64encode(f"{AMAZON_ACCESS_KEY}:{AMAZON_SECRET_KEY}".encode()).decode()
+    token_resp = requests.post(
+        token_url,
+        headers={
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Authorization": f"Basic {auth_str}",
+        },
+        data={"grant_type": "client_credentials", "scope": "ProductAdvertisingAPI"},
+        timeout=30,
+    )
+    print(f"[DEBUG] OAuth2 status: {token_resp.status_code}")
+    print(f"[DEBUG] OAuth2 response: {token_resp.text[:500]}")
+
     api = AmazonCreatorsApi(
         credential_id=AMAZON_ACCESS_KEY,
         credential_secret=AMAZON_SECRET_KEY,
