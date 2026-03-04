@@ -33,7 +33,7 @@ def fetch_ranking():
     api = AmazonCreatorsApi(
         credential_id=AMAZON_ACCESS_KEY,
         credential_secret=AMAZON_SECRET_KEY,
-        version="2.2",
+        version="3.3",
         tag=AMAZON_PARTNER_TAG,
         country=Country.JP,
     )
