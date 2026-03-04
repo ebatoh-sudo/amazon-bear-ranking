@@ -25,13 +25,18 @@ def fetch_ranking():
     """Amazonベストセラーページをスクレイピングしてランキング情報を取得"""
     resp = requests.get(AMAZON_URL, headers=HEADERS, timeout=30)
     resp.raise_for_status()
+    print(f"[DEBUG] レスポンスサイズ: {len(resp.text)} bytes")
+    print(f"[DEBUG] タイトル: {resp.text[resp.text.find('<title'):resp.text.find('</title>')+8] if '<title' in resp.text else 'no title'}")
     soup = BeautifulSoup(resp.text, "lxml")
     items = []
-    product_cards = soup.select("div[id^='p13n-asin-index-']")
+    product_cards = soup.select("div#gridItemRoot")
+    if not product_cards:
+        product_cards = soup.select("div[id^='p13n-asin-index-']")
     if not product_cards:
         product_cards = soup.select("div.a-cardui._cDEzb_p13n-grid-content_3RQ2P")
     if not product_cards:
         product_cards = soup.select("[data-asin]")
+    print(f"[DEBUG] 商品カード数: {len(product_cards)}")
     for card in product_cards[:10]:
         item = {}
         rank_el = card.select_one("span.zg-bdg-text")
