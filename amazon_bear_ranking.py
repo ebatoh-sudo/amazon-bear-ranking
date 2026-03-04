@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Amazon.co.jp 熊よけ・忌避用品 ベストセラーランキング Top10 を
-PA-API (Product Advertising API) 経由で取得し
+Amazon Creators API (旧PA-API) 経由で取得し
 Google Chat Webhook に投稿するスクリプト
 """
 import json
@@ -10,7 +10,8 @@ import sys
 from datetime import datetime, timezone, timedelta
 
 import requests
-from amazon_paapi import AmazonAPI
+from amazon_creatorsapi import AmazonCreatorsApi, Country
+from amazon_creatorsapi.models import SortBy, SearchItemsResource
 
 GOOGLE_CHAT_WEBHOOK_URL = os.environ.get("GOOGLE_CHAT_WEBHOOK_URL", "")
 AMAZON_ACCESS_KEY = os.environ.get("AMAZON_ACCESS_KEY", "")
@@ -24,37 +25,38 @@ JST = timezone(timedelta(hours=9))
 
 
 def fetch_ranking():
-    """PA-API でベストセラーランキング情報を取得"""
+    """Creators API でベストセラーランキング情報を取得"""
     if not all([AMAZON_ACCESS_KEY, AMAZON_SECRET_KEY, AMAZON_PARTNER_TAG]):
         print("[ERROR] Amazon API認証情報が未設定です。")
         sys.exit(1)
 
-    amazon = AmazonAPI(
-        AMAZON_ACCESS_KEY,
-        AMAZON_SECRET_KEY,
-        AMAZON_PARTNER_TAG,
-        country="JP",
+    api = AmazonCreatorsApi(
+        credential_id=AMAZON_ACCESS_KEY,
+        credential_secret=AMAZON_SECRET_KEY,
+        version="2.2",
+        tag=AMAZON_PARTNER_TAG,
+        country=Country.JP,
     )
 
-    # BrowseNode のベストセラーを取得
     try:
-        result = amazon.search_items(
+        result = api.search_items(
             browse_node_id=BROWSE_NODE_ID,
-            sort_by="BestSellers",
+            sort_by=SortBy.FEATURED,
             item_count=10,
             resources=[
-                "ItemInfo.Title",
-                "Offers.Listings.Price",
-                "Offers.Listings.SavingBasis",
-                "BrowseNodeInfo.BrowseNodes",
+                SearchItemsResource.ITEM_INFO_DOT_TITLE,
+                SearchItemsResource.OFFERS_V2_DOT_LISTINGS_DOT_PRICE,
+                SearchItemsResource.CUSTOMER_REVIEWS_DOT_STAR_RATING,
+                SearchItemsResource.CUSTOMER_REVIEWS_DOT_COUNT,
+                SearchItemsResource.BROWSE_NODE_INFO_DOT_WEBSITE_SALES_RANK,
             ],
         )
     except Exception as e:
-        print(f"[ERROR] PA-API リクエスト失敗: {e}")
+        print(f"[ERROR] Creators API リクエスト失敗: {e}")
         sys.exit(1)
 
     if not result or not result.items:
-        print("[ERROR] PA-APIからデータを取得できませんでした。")
+        print("[ERROR] APIからデータを取得できませんでした。")
         return []
 
     items = []
@@ -62,29 +64,32 @@ def fetch_ranking():
         item = {"rank": str(rank)}
 
         # タイトル
-        item["title"] = product.item_info.title.display_value if product.item_info and product.item_info.title else "不明"
+        item["title"] = (
+            product.item_info.title.display_value
+            if product.item_info and product.item_info.title
+            else "不明"
+        )
 
         # URL
         item["url"] = product.detail_page_url or ""
 
         # 価格
         price_str = "価格不明"
-        if product.offers and product.offers.listings:
-            listing = product.offers.listings[0]
-            if listing.price:
-                price_str = f"¥{listing.price.amount:,.0f}" if listing.price.amount else listing.price.display_amount or "価格不明"
-            # 元値（セール前価格）
-            if listing.saving_basis and listing.saving_basis.amount:
-                item["discount"] = f"元値: ¥{listing.saving_basis.amount:,.0f}"
-            else:
-                item["discount"] = ""
-        else:
-            item["discount"] = ""
+        item["discount"] = ""
+        if product.offers_v2 and product.offers_v2.listings:
+            listing = product.offers_v2.listings[0]
+            if listing.price and listing.price.money:
+                price_str = f"¥{listing.price.money.amount:,.0f}"
         item["price"] = price_str
 
-        # PA-APIではレビュー情報は取得不可
+        # レビュー
         item["rating"] = ""
         item["reviews"] = ""
+        if product.customer_reviews:
+            if product.customer_reviews.star_rating:
+                item["rating"] = f"{product.customer_reviews.star_rating.value} / 5"
+            if product.customer_reviews.count:
+                item["reviews"] = str(product.customer_reviews.count)
 
         items.append(item)
 
@@ -95,7 +100,7 @@ def format_message(items):
     """ランキング情報をGoogle Chat用のメッセージにフォーマット"""
     today = datetime.now(JST).strftime("%Y/%m/%d")
     lines = [
-        f"*Amazon 熊よけ・忌避用品 ベストセラー Top10*",
+        "*Amazon 熊よけ・忌避用品 ベストセラー Top10*",
         f"{today} 更新",
         "━" * 30,
     ]

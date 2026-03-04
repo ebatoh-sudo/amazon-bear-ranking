@@ -1,2 +1,2 @@
 requests>=2.31.0
-python-amazon-paapi>=1.1.0
+python-amazon-paapi>=6.1.0
