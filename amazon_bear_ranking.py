@@ -1,76 +1,96 @@
 #!/usr/bin/env python3
 """
 Amazon.co.jp 熊よけ・忌避用品 ベストセラーランキング Top10 を
+PA-API (Product Advertising API) 経由で取得し
 Google Chat Webhook に投稿するスクリプト
 """
 import json
 import os
 import sys
 from datetime import datetime, timezone, timedelta
+
 import requests
-from bs4 import BeautifulSoup
-AMAZON_URL = "https://www.amazon.co.jp/gp/bestsellers/sports/2201156051"
+from amazon_paapi import AmazonAPI
+
 GOOGLE_CHAT_WEBHOOK_URL = os.environ.get("GOOGLE_CHAT_WEBHOOK_URL", "")
-HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/120.0.0.0 Safari/537.36"
-    ),
-    "Accept-Language": "ja-JP,ja;q=0.9",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-}
+AMAZON_ACCESS_KEY = os.environ.get("AMAZON_ACCESS_KEY", "")
+AMAZON_SECRET_KEY = os.environ.get("AMAZON_SECRET_KEY", "")
+AMAZON_PARTNER_TAG = os.environ.get("AMAZON_PARTNER_TAG", "")
+
+# 熊よけ・忌避用品 のブラウズノードID
+BROWSE_NODE_ID = "2201156051"
+
 JST = timezone(timedelta(hours=9))
+
+
 def fetch_ranking():
-    """Amazonベストセラーページをスクレイピングしてランキング情報を取得"""
-    resp = requests.get(AMAZON_URL, headers=HEADERS, timeout=30)
-    resp.raise_for_status()
-    print(f"[DEBUG] レスポンスサイズ: {len(resp.text)} bytes")
-    print(f"[DEBUG] タイトル: {resp.text[resp.text.find('<title'):resp.text.find('</title>')+8] if '<title' in resp.text else 'no title'}")
-    soup = BeautifulSoup(resp.text, "lxml")
+    """PA-API でベストセラーランキング情報を取得"""
+    if not all([AMAZON_ACCESS_KEY, AMAZON_SECRET_KEY, AMAZON_PARTNER_TAG]):
+        print("[ERROR] Amazon API認証情報が未設定です。")
+        sys.exit(1)
+
+    amazon = AmazonAPI(
+        AMAZON_ACCESS_KEY,
+        AMAZON_SECRET_KEY,
+        AMAZON_PARTNER_TAG,
+        country="JP",
+    )
+
+    # BrowseNode のベストセラーを取得
+    try:
+        result = amazon.search_items(
+            browse_node_id=BROWSE_NODE_ID,
+            sort_by="BestSellers",
+            item_count=10,
+            resources=[
+                "ItemInfo.Title",
+                "Offers.Listings.Price",
+                "Offers.Listings.SavingBasis",
+                "BrowseNodeInfo.BrowseNodes",
+            ],
+        )
+    except Exception as e:
+        print(f"[ERROR] PA-API リクエスト失敗: {e}")
+        sys.exit(1)
+
+    if not result or not result.items:
+        print("[ERROR] PA-APIからデータを取得できませんでした。")
+        return []
+
     items = []
-    product_cards = soup.select("div#gridItemRoot")
-    if not product_cards:
-        product_cards = soup.select("div[id^='p13n-asin-index-']")
-    if not product_cards:
-        product_cards = soup.select("div.a-cardui._cDEzb_p13n-grid-content_3RQ2P")
-    if not product_cards:
-        product_cards = soup.select("[data-asin]")
-    print(f"[DEBUG] 商品カード数: {len(product_cards)}")
-    for card in product_cards[:10]:
-        item = {}
-        rank_el = card.select_one("span.zg-bdg-text")
-        item["rank"] = rank_el.get_text(strip=True).replace("#", "") if rank_el else str(len(items) + 1)
-        title_el = (
-            card.select_one("a.a-link-normal span div")
-            or card.select_one("a.a-link-normal span")
-            or card.select_one("div._cDEzb_p13n-sc-css-line-clamp-3_g3dy1")
-            or card.select_one("div._cDEzb_p13n-sc-css-line-clamp-4_2q2cc")
-            or card.select_one("span.a-size-small")
-        )
-        item["title"] = title_el.get_text(strip=True) if title_el else "不明"
-        link_el = card.select_one("a.a-link-normal[href]")
-        if link_el:
-            href = link_el.get("href", "")
-            if href.startswith("/"):
-                href = "https://www.amazon.co.jp" + href
-            item["url"] = href.split("/ref=")[0]
+    for rank, product in enumerate(result.items, start=1):
+        item = {"rank": str(rank)}
+
+        # タイトル
+        item["title"] = product.item_info.title.display_value if product.item_info and product.item_info.title else "不明"
+
+        # URL
+        item["url"] = product.detail_page_url or ""
+
+        # 価格
+        price_str = "価格不明"
+        if product.offers and product.offers.listings:
+            listing = product.offers.listings[0]
+            if listing.price:
+                price_str = f"¥{listing.price.amount:,.0f}" if listing.price.amount else listing.price.display_amount or "価格不明"
+            # 元値（セール前価格）
+            if listing.saving_basis and listing.saving_basis.amount:
+                item["discount"] = f"元値: ¥{listing.saving_basis.amount:,.0f}"
+            else:
+                item["discount"] = ""
         else:
-            item["url"] = ""
-        price_el = (
-            card.select_one("span.p13n-sc-price")
-            or card.select_one("span._cDEzb_p13n-sc-price_3mJ9Z")
-            or card.select_one("span.a-price span.a-offscreen")
-        )
-        item["price"] = price_el.get_text(strip=True) if price_el else "価格不明"
-        rating_el = card.select_one("span.a-icon-alt")
-        item["rating"] = rating_el.get_text(strip=True) if rating_el else ""
-        review_el = card.select_one("a.a-size-small")
-        item["reviews"] = review_el.get_text(strip=True) if review_el else ""
-        discount_el = card.select_one("span.a-text-price")
-        item["discount"] = f"元値: {discount_el.get_text(strip=True)}" if discount_el else ""
+            item["discount"] = ""
+        item["price"] = price_str
+
+        # PA-APIではレビュー情報は取得不可
+        item["rating"] = ""
+        item["reviews"] = ""
+
         items.append(item)
+
     return items
+
+
 def format_message(items):
     """ランキング情報をGoogle Chat用のメッセージにフォーマット"""
     today = datetime.now(JST).strftime("%Y/%m/%d")
@@ -96,6 +116,8 @@ def format_message(items):
             lines.append(f"　{item['url']}")
         lines.append("")
     return "\n".join(lines)
+
+
 def send_to_google_chat(message):
     """Google Chat Webhookにメッセージを送信"""
     if not GOOGLE_CHAT_WEBHOOK_URL:
@@ -109,12 +131,14 @@ def send_to_google_chat(message):
     )
     resp.raise_for_status()
     print(f"[OK] Google Chat に送信完了 (status: {resp.status_code})")
+
+
 def main():
     print(f"[{datetime.now(JST)}] ランキング取得開始...")
     try:
         items = fetch_ranking()
     except Exception as e:
-        print(f"[ERROR] スクレイピング失敗: {e}")
+        print(f"[ERROR] 取得失敗: {e}")
         sys.exit(1)
     if not items:
         print("[ERROR] ランキングデータを取得できませんでした。")
@@ -126,5 +150,7 @@ def main():
         print(message)
         return
     send_to_google_chat(message)
+
+
 if __name__ == "__main__":
     main()
